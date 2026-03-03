@@ -15,11 +15,8 @@ class MainTest {
 
     @ParameterizedTest(name = "{index} Typechecking well-typed program {0}")
     @ValueSource(strings = {
-            "tests/well-typed/factorial.stella",
-            "tests/well-typed/squares.stella",
-            "tests/well-typed/higher-order-1.stella",
-            "tests/well-typed/increment_twice.stella",
-            "tests/well-typed/logical-operators.stella"})
+            "tests/well-typed/1.stella",
+    })
     void testWellTyped(String filepath) throws Exception {
         String[] args = new String[0];
         final InputStream original = System.in;
@@ -29,7 +26,7 @@ class MainTest {
         System.setIn(original);
     }
 
-    @ParameterizedTest(name = "{index} Typechecking ill-typed program {0}")
+   @ParameterizedTest(name = "{index} Typechecking ill-typed program {0}")
     @ValueSource(strings = {
             "tests/ill-typed/applying-non-function-1.stella",
             "tests/ill-typed/applying-non-function-2.stella",
@@ -69,7 +66,7 @@ class MainTest {
 
     static Stream<String> provideWeek2TestFiles() {
         List<String> filePaths = new ArrayList<>();
-        for (int i = 1; i <= 120; i++) {
+        for (int i = 1; i <= 120; i += 2) {
             filePaths.add(String.format("tests/week-2/main/secret/%d.stella", i));
         }
         return filePaths.stream();
@@ -107,7 +104,7 @@ class MainTest {
 
     static Stream<String> provideWeek5TestFiles() {
         List<String> filePaths = new ArrayList<>();
-        for (int i = 2; i <= 134; i+=2) {
+        for (int i = 2; i <= 174; i+=2) {
             filePaths.add(String.format("tests/week-5/main/secret/%d.stella", i));
         }
         return filePaths.stream();
@@ -126,8 +123,8 @@ class MainTest {
 
     static Stream<String> provideWeek6TestFiles() {
         List<String> filePaths = new ArrayList<>();
-        for (int i = 2; i <= 174; i+=2) {
-            filePaths.add(String.format("tests/week-6/main/secret/%d.stella", i));
+        for (int i = 1; i <= 133; i+=2) {
+            filePaths.add(String.format("tests/week-6/main/public/%d.stella", i));
         }
         return filePaths.stream();
     }

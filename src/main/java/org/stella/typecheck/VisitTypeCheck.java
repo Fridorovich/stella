@@ -3,48 +3,11 @@
 package org.stella.typecheck;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
-import org.syntax.stella.Absyn.ABinding;
-import org.syntax.stella.Absyn.AMatchCase;
-import org.syntax.stella.Absyn.AParamDecl;
-import org.syntax.stella.Absyn.APatternBinding;
-import org.syntax.stella.Absyn.ARecordFieldType;
-import org.syntax.stella.Absyn.AVariantFieldType;
-import org.syntax.stella.Absyn.Binding;
-import org.syntax.stella.Absyn.DeclExceptionType;
-import org.syntax.stella.Absyn.DeclFun;
-import org.syntax.stella.Absyn.Expr;
-import org.syntax.stella.Absyn.Let;
-import org.syntax.stella.Absyn.ListRecordFieldType;
-import org.syntax.stella.Absyn.ListType;
-import org.syntax.stella.Absyn.Pattern;
-import org.syntax.stella.Absyn.PatternCons;
-import org.syntax.stella.Absyn.PatternFalse;
-import org.syntax.stella.Absyn.PatternInl;
-import org.syntax.stella.Absyn.PatternInr;
-import org.syntax.stella.Absyn.PatternInt;
-import org.syntax.stella.Absyn.PatternList;
-import org.syntax.stella.Absyn.PatternTrue;
-import org.syntax.stella.Absyn.PatternTuple;
-import org.syntax.stella.Absyn.PatternUnit;
-import org.syntax.stella.Absyn.PatternVar;
-import org.syntax.stella.Absyn.RecordFieldType;
-import org.syntax.stella.Absyn.SomeExprData;
-import org.syntax.stella.Absyn.SomeReturnType;
-import org.syntax.stella.Absyn.SomeTyping;
-import org.syntax.stella.Absyn.Type;
-import org.syntax.stella.Absyn.TypeBool;
-import org.syntax.stella.Absyn.TypeFun;
-import org.syntax.stella.Absyn.TypeList;
-import org.syntax.stella.Absyn.TypeNat;
-import org.syntax.stella.Absyn.TypeRecord;
-import org.syntax.stella.Absyn.TypeRef;
-import org.syntax.stella.Absyn.TypeSum;
-import org.syntax.stella.Absyn.TypeTuple;
-import org.syntax.stella.Absyn.TypeUnit;
-import org.syntax.stella.Absyn.TypeVariant;
-import org.syntax.stella.Absyn.VariantFieldType;
+import org.syntax.stella.Absyn.*;
 import org.syntax.stella.PrettyPrinter;
 
 /*** Visitor Design Pattern Skeleton. ***/
@@ -483,7 +446,8 @@ import org.syntax.stella.PrettyPrinter;
     public R visit(org.syntax.stella.Absyn.PatternVariant p, A arg)
     { /* Code for PatternVariant goes here */
       //p.stellaident_;
-      p.patterndata_.accept(new PatternDataVisitor<R,A>(), arg);
+      Context ctx = (Context) arg;
+      p.patterndata_.accept(new PatternDataVisitor<R,A>(), (A) ctx);
       return null;
     }
     public R visit(org.syntax.stella.Absyn.PatternInl p, A arg)
@@ -571,7 +535,6 @@ import org.syntax.stella.PrettyPrinter;
   }
   public class ExprVisitor<R,A> implements org.syntax.stella.Absyn.Expr.Visitor<R,A>
   {
-    // Helper inside ExprVisitor to typecheck patterns and collect bindings
     private Map<String, Type> checkPatternAndBindings(Pattern pat, Type matched) {
       Map<String, Type> binds = new HashMap<>();
       if (pat instanceof PatternVar pv) {
@@ -639,12 +602,57 @@ import org.syntax.stella.PrettyPrinter;
         }
         return binds;
       }
+      if (pat instanceof PatternVariant pv) {
+        if (!(matched instanceof TypeVariant tv)) {
+          throw new TypeError(ERR_UNEXPECTED_PATTERN_FOR_TYPE +
+                  ": variant1 pattern for non-variant type " + PrettyPrinter.print(matched));
+        }
+
+        boolean found = false;
+        Type expectedPayloadType = null;
+
+        for (VariantFieldType vft : tv.listvariantfieldtype_) {
+          if (vft instanceof AVariantFieldType avt) {
+            if (avt.stellaident_.equals(pv.stellaident_)) {
+              found = true;
+              if (avt.optionaltyping_ instanceof SomeTyping st) {
+                expectedPayloadType = st.type_;
+              }
+              break;
+            }
+          }
+        }
+
+        if (!found) {
+          throw new TypeError(ERROR_UNEXPECTED_VARIANT_LABEL +
+                  ": label '" + pv.stellaident_ + "' not found in variant1 type");
+        }
+
+        if (pv.patterndata_ instanceof SomePatternData spd) {
+          Pattern subPattern = spd.pattern_;
+
+          if (expectedPayloadType == null) {
+            throw new TypeError(ERR_UNEXPECTED_PATTERN_FOR_TYPE +
+                    ": variant1 label '" + pv.stellaident_ + "' has no data, but pattern has");
+          }
+
+          binds.putAll(checkPatternAndBindings(subPattern, expectedPayloadType));
+        } else {
+
+          if (expectedPayloadType != null) {
+            throw new TypeError(ERR_UNEXPECTED_PATTERN_FOR_TYPE +
+                    ": variant1 label '" + pv.stellaident_ + "' expects data, but pattern has none");
+          }
+        }
+
+        return binds;
+      }
       return binds;
     }
     public R visit(org.syntax.stella.Absyn.Sequence p, A arg)
     { /* Sequencing: first must be Unit, result is type of second */
       Context ctx = (Context) arg;
-      Type firstTy = (Type) p.expr_1.accept(new ExprVisitor<Type,A>(), arg);
+      Type firstTy = (Type) p.expr_1.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(null));
       ensureEqual("sequencing first expression", new TypeUnit(), firstTy);
       return (R) p.expr_2.accept(new ExprVisitor<Type,A>(), arg);
     }
@@ -658,7 +666,8 @@ import org.syntax.stella.PrettyPrinter;
         if (!(pb.pattern_ instanceof PatternVar pv)) {
           throw new TypeError(ERR_UNEXP_TYPE_EXPR + ": only variable patterns are supported in let-bindings");
         }
-        Type rhsTy = (Type) pb.expr_.accept(new ExprVisitor<Type,A>(), (A) inner);
+        Type rhsTy = (Type) pb.expr_.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(null));
+        //Type rhsTy = (Type) pb.expr_.accept(new ExprVisitor<>(), (A) ctx);
         inner.bind(pv.stellaident_, rhsTy);
       }
       return (R) p.expr_.accept(new ExprVisitor<Type,A>(), (A) inner);
@@ -743,36 +752,49 @@ import org.syntax.stella.PrettyPrinter;
       p.type_.accept(new TypeVisitor<R,A>(), arg);
       return null;
     }
-    public R visit(org.syntax.stella.Absyn.Abstraction p, A arg)
-    { /* Code for Abstraction goes here */
+    public R visit(org.syntax.stella.Absyn.Abstraction p, A arg) {
       Context ctx = (Context) arg;
+
       if (p.listparamdecl_.size() != 1 || !(p.listparamdecl_.get(0) instanceof AParamDecl param)) {
         throw new TypeError(ERR_UNEXP_TYPE_EXPR + ": anonymous functions must have exactly one parameter");
       }
+
       Type paramTy = param.type_;
-      if (ctx.expected != null && !(ctx.expected instanceof TypeFun)) {
-        throw new TypeError(ERR_UNEXP_LAMBDA + ": a non-function type was expected: " + PrettyPrinter.print(ctx.expected));
-      }
-      if (ctx.expected instanceof TypeFun ef) {
+
+      Type expectedFunType = ctx.expected;
+
+      Context bodyCtx = ctx.copy();
+      bodyCtx.bind(param.stellaident_, paramTy);
+
+      if (expectedFunType instanceof TypeFun ef) {
         if (ef.listtype_.size() != 1) {
-          throw new TypeError(ERR_UNEXP_LAMBDA + ": expected unary function type, got " + PrettyPrinter.print(ctx.expected));
+          throw new TypeError(ERR_UNEXP_LAMBDA + ": expected unary function type, got " +
+                  PrettyPrinter.print(expectedFunType));
         }
+
         Type expectedParamTy = ef.listtype_.get(0);
         if (!typeEquals(expectedParamTy, paramTy)) {
-          throw new TypeError(ERR_UNEXP_TYPE_PARAM + ": expected parameter of type " + PrettyPrinter.print(expectedParamTy) +
+          throw new TypeError(ERR_UNEXP_TYPE_PARAM +
+                  ": expected parameter of type " + PrettyPrinter.print(expectedParamTy) +
                   ", but got " + PrettyPrinter.print(paramTy));
         }
-        Context bodyCtx = ctx.copy();
-        bodyCtx.bind(param.stellaident_, paramTy);
+
         bodyCtx.expected = ef.type_;
         Type bodyTy = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), (A) bodyCtx);
         ensureEqual("function body", ef.type_, bodyTy);
-        return (R) ctx.expected;
+
+        return (R) expectedFunType;
       } else {
-        Context bodyCtx = ctx.copy();
-        bodyCtx.bind(param.stellaident_, paramTy);
+        //нет ожидаемого
         Type bodyTy = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), (A) bodyCtx);
-        return (R) mkFun(paramTy, bodyTy);
+        Type lambdaTy = mkFun(paramTy, bodyTy);
+
+        if (expectedFunType != null) {
+          ensureEqual("lambda type", expectedFunType, lambdaTy);
+          return (R) expectedFunType;
+        }
+
+        return (R) lambdaTy;
       }
     }
     public R visit(org.syntax.stella.Absyn.Variant p, A arg)
@@ -783,7 +805,10 @@ import org.syntax.stella.PrettyPrinter;
       }
       if (ctx.expected instanceof TypeVariant) {
         TypeVariant tv = (TypeVariant) ctx.expected;
-        boolean found = false; Type expectedPayload = null;
+
+        boolean found = false;
+        Type expectedPayload = null;
+
         for (VariantFieldType vft : tv.listvariantfieldtype_) {
           if (vft instanceof AVariantFieldType) {
             AVariantFieldType avt = (AVariantFieldType) vft;
@@ -816,37 +841,90 @@ import org.syntax.stella.PrettyPrinter;
       }
       throw new TypeError(ERROR_AMBIGUOUS_VARIANT_TYPE + ": cannot infer variant type for label '" + p.stellaident_ + "'");
     }
-    public R visit(org.syntax.stella.Absyn.Match p, A arg)
-    { /* Match-expression (sum types and lists) */
+    public R visit(org.syntax.stella.Absyn.Match p, A arg) {
       Context ctx = (Context) arg;
-      Type scrutTy = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+
+      Type outerExpected = ctx.expected;
+
+      Type scrutTy = (Type) p.expr_.accept(
+              new ExprVisitor<Type,A>(),
+              (A) ctx.withExpected(null)
+      );
+
       if (p.listmatchcase_.isEmpty()) {
-        throw new TypeError(ERR_ILLEGAL_EMPTY_MATCHING + ": match must have at least one case");
+        throw new TypeError(ERR_ILLEGAL_EMPTY_MATCHING);
       }
 
       boolean needSumExhaust = scrutTy instanceof TypeSum;
       boolean needListExhaust = scrutTy instanceof TypeList;
+      boolean needVariantExhaust = scrutTy instanceof TypeVariant;
+
       boolean hasInl = false, hasInr = false;
       boolean hasEmpty = false, hasCons = false;
+      Set<String> coveredLabels = new HashSet<>();
 
       Type resultTy = null;
+
+      //чекаем ветки
       for (org.syntax.stella.Absyn.MatchCase c : p.listmatchcase_) {
         AMatchCase mc = (AMatchCase) c;
+
+        //чекаем переменные в паттерне
         Map<String, Type> binds = checkPatternAndBindings(mc.pattern_, scrutTy);
+
         if (mc.pattern_ instanceof PatternInl) hasInl = true;
         if (mc.pattern_ instanceof PatternInr) hasInr = true;
         if (mc.pattern_ instanceof PatternCons) hasCons = true;
         if (mc.pattern_ instanceof PatternList pl && pl.listpattern_.isEmpty()) hasEmpty = true;
+        if (mc.pattern_ instanceof PatternVariant pv) {
+          coveredLabels.add(pv.stellaident_);
+        }
+
         Context branchCtx = ctx.copy();
-        for (var e : binds.entrySet()) branchCtx.bind(e.getKey(), e.getValue());
-        Type brTy = (Type) mc.expr_.accept(new ExprVisitor<Type,A>(), (A) branchCtx);
-        if (resultTy == null) resultTy = brTy; else ensureEqual("match branches", resultTy, brTy);
+        for (var e : binds.entrySet()) {
+          branchCtx.bind(e.getKey(), e.getValue());
+        }
+
+        Type brTy;
+        if (outerExpected != null) {
+          brTy = (Type) mc.expr_.accept(
+                  new ExprVisitor<Type,A>(),
+                  (A) branchCtx.withExpected(outerExpected)
+          );
+          ensureEqual("match branch", outerExpected, brTy);
+        } else {
+          brTy = (Type) mc.expr_.accept(
+                  new ExprVisitor<Type,A>(),
+                  (A) branchCtx
+          );
+        }
+
+        if (resultTy == null) {
+          resultTy = brTy;
+        } else {
+          ensureEqual("match branches", resultTy, brTy);
+        }
       }
+
       if (needSumExhaust && !(hasInl && hasInr)) {
-        throw new TypeError(ERR_NONEXHAUSTIVE_MATCH + ": missing inl/inr branches");
+        throw new TypeError(ERR_NONEXHAUSTIVE_MATCH +
+                ": missing inl/inr branches");
       }
       if (needListExhaust && !(hasEmpty && hasCons)) {
         throw new TypeError(ERR_NONEXHAUSTIVE_MATCH + ": missing empty/cons branches");
+      }
+      if (needVariantExhaust) {
+        TypeVariant tv = (TypeVariant) scrutTy;
+        for (VariantFieldType vft : tv.listvariantfieldtype_) {
+          AVariantFieldType avt = (AVariantFieldType) vft;
+          if (!coveredLabels.contains(avt.stellaident_)) {
+            throw new TypeError(ERR_NONEXHAUSTIVE_MATCH + ": missing branch for label '" + avt.stellaident_ + "'");
+          }
+        }
+      }
+
+      if (outerExpected != null) {
+        return (R) outerExpected;
       }
       return (R) resultTy;
     }
@@ -854,22 +932,24 @@ import org.syntax.stella.PrettyPrinter;
     { /* List literal */
       Context ctx = (Context) arg;
       if (ctx.expected != null && !(ctx.expected instanceof TypeList)) {
-        throw new TypeError(ERR_UNEXPECTED_LIST + ": expected " + PrettyPrinter.print(ctx.expected));
+        throw new TypeError(ERR_UNEXPECTED_LIST + ": expected1 " + PrettyPrinter.print(ctx.expected));
       }
       if (ctx.expected instanceof TypeList el) {
         for (org.syntax.stella.Absyn.Expr x: p.listexpr_) {
           Type et = (Type) x.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(el.type_));
-          ensureEqual("list element", el.type_, et);
+          ensureEqual("list element1", el.type_, et);
         }
         return (R) new TypeList(el.type_);
       }
       if (p.listexpr_.isEmpty()) {
         throw new TypeError(ERR_AMBIGUOUS_LIST_TYPE + ": cannot infer element type of []");
       }
+
+      //без ожидаемого типа
       Type first = (Type) p.listexpr_.get(0).accept(new ExprVisitor<Type,A>(), arg);
       for (int i=1;i<p.listexpr_.size();i++) {
         Type et = (Type) p.listexpr_.get(i).accept(new ExprVisitor<Type,A>(), arg);
-        ensureEqual("list element", first, et);
+        ensureEqual("list element2", first, et);
       }
       return (R) new TypeList(first);
     }
@@ -912,31 +992,55 @@ import org.syntax.stella.PrettyPrinter;
     }
     public R visit(org.syntax.stella.Absyn.Deref p, A arg)
     { /* Deref: from &T to T */
-      Type t = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+      Context ctx = (Context) arg;
+      Type t = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(null));
       TypeRef rt = expectRefType(t, "dereference");
       return (R) rt.type_;
     }
-    public R visit(org.syntax.stella.Absyn.Application p, A arg)
-    { /* Function application */
+    public R visit(org.syntax.stella.Absyn.Application p, A arg) {
       Context ctx = (Context) arg;
+      Type outerExpected = ctx.expected;
 
-      Type calleeTy = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+      //чекаем функцию
+      Type calleeTy = (Type) p.expr_.accept(
+              new ExprVisitor<Type,A>(),
+              (A) ctx.withExpected(null)
+      );
+
       Type resultTy = null;
       Type currentTy = calleeTy;
-      for (org.syntax.stella.Absyn.Expr x: p.listexpr_) {
+
+      for (org.syntax.stella.Absyn.Expr x : p.listexpr_) {
         TypeFun tf = expectFunType(currentTy, "application");
         if (tf.listtype_.size() != 1) {
-          throw new TypeError(ERR_NOT_A_FUNCTION + ": expected unary function, got " + PrettyPrinter.print(currentTy));
+          throw new TypeError(ERR_NOT_A_FUNCTION +
+                  ": expected unary function, got " + PrettyPrinter.print(currentTy));
         }
+
         Type paramTy = tf.listtype_.get(0);
-        Type argTy = (Type) x.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(paramTy));
+
+        //аргумент
+        Type argTy = (Type) x.accept(
+                new ExprVisitor<Type,A>(),
+                (A) ctx.withExpected(paramTy)
+        );
+
         ensureEqual("function argument", paramTy, argTy);
         currentTy = tf.type_;
         resultTy = currentTy;
       }
+
       if (resultTy == null) {
         resultTy = calleeTy;
       }
+
+      if (outerExpected != null) {
+        System.out.println("Application result: " + PrettyPrinter.print(resultTy));
+        System.out.println("Outer expected: " + PrettyPrinter.print(outerExpected));
+        ensureEqual("application result", outerExpected, resultTy);
+        return (R) outerExpected;
+      }
+
       return (R) resultTy;
     }
     public R visit(org.syntax.stella.Absyn.TypeApplication p, A arg)
@@ -949,7 +1053,12 @@ import org.syntax.stella.PrettyPrinter;
     }
     public R visit(org.syntax.stella.Absyn.DotRecord p, A arg)
     { /* Record field access */
-      Type t = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+      Context ctx = (Context) arg;
+      System.out.println("DotRecord");
+      Type t = (Type) p.expr_.accept(
+              new ExprVisitor<Type,A>(),
+              (A) ctx.withExpected(null)
+      );
       if (!(t instanceof TypeRecord)) {
         throw new TypeError(ERROR_NOT_A_RECORD + ": field access on type " + PrettyPrinter.print(t));
       }
@@ -958,48 +1067,85 @@ import org.syntax.stella.PrettyPrinter;
         if (rft instanceof ARecordFieldType) {
           ARecordFieldType arf = (ARecordFieldType) rft;
           if (arf.stellaident_.equals(p.stellaident_)) {
+            Type fieldTy = arf.type_;
+
+            if (ctx.expected != null) {
+              ensureEqual("field access", ctx.expected, fieldTy);
+            }
             return (R) arf.type_;
           }
         }
       }
       throw new TypeError(ERROR_UNEXPECTED_FIELD_ACCESS + ": field '" + p.stellaident_ + "' not present");
     }
-    public R visit(org.syntax.stella.Absyn.DotTuple p, A arg)
-    {
-      Type t = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+    public R visit(org.syntax.stella.Absyn.DotTuple p, A arg) {
+      Context ctx = (Context) arg;
+      System.out.println("DotTuple");
+      Type t = (Type) p.expr_.accept(
+              new ExprVisitor<Type,A>(),
+              (A) ctx.withExpected(null)
+      );
+
       TypeTuple tt = expectTupleType(t, "tuple projection");
+
       if (p.integer_ < 1 || p.integer_ > tt.listtype_.size()) {
         throw new TypeError(ERR_NOT_A_TUPLE + ": tuple index out of bounds");
       }
-      return (R) tt.listtype_.get(p.integer_ - 1);
+
+      Type resultTy = tt.listtype_.get(p.integer_ - 1);
+
+      if (ctx.expected != null) {
+        ensureEqual("tuple projection", ctx.expected, resultTy);
+        return (R) ctx.expected;
+      }
+
+      return (R) resultTy;
     }
-    public R visit(org.syntax.stella.Absyn.Tuple p, A arg)
-    {
+    public R visit(org.syntax.stella.Absyn.Tuple p, A arg) {
       Context ctx = (Context) arg;
+
+      // Сохраняем внешний ожидаемый тип для последующей проверки
+      Type outerExpected = ctx.expected;
+
+      // ВАЖНО: Кортеж проверяем БЕЗ ожидаемого типа!
+      // Его тип выводится из элементов
+      System.out.println("Tuple");
       ListType ts = new ListType();
-      for (org.syntax.stella.Absyn.Expr x: p.listexpr_) {
-        ts.add((Type) x.accept(new ExprVisitor<Type,A>(), arg));
+      for (org.syntax.stella.Absyn.Expr x : p.listexpr_) {
+        // Каждый элемент проверяем в исходном контексте, но без expected
+        // (или можно с expected = null для каждого элемента)
+        Type elemTy = (Type) x.accept(
+                new ExprVisitor<Type,A>(),
+                (A) ctx.withExpected(null)
+        );
+        ts.add(elemTy);
       }
-      TypeTuple tt = new TypeTuple(ts);
-      if (ctx.expected != null && !(ctx.expected instanceof TypeTuple)) {
-        throw new TypeError(ERR_UNEXP_TUPLE + ": expected " + PrettyPrinter.print(ctx.expected) + ", got tuple " + PrettyPrinter.print(tt));
+
+      TypeTuple tupleTy = new TypeTuple(ts);
+
+      // Если есть внешний ожидаемый тип, проверяем соответствие
+      if (outerExpected != null) {
+        ensureEqual("tuple", outerExpected, tupleTy);
+        return (R) outerExpected;
       }
-      return (R) tt;
+
+      return (R) tupleTy;
     }
     public R visit(org.syntax.stella.Absyn.Record p, A arg)
     { /* Record literal */
       Context ctx = (Context) arg;
+      System.out.println("Record");
       if (ctx.expected != null && !(ctx.expected instanceof TypeRecord)) {
         throw new TypeError(ERROR_UNEXPECTED_RECORD + ": expected " + PrettyPrinter.print(ctx.expected));
       }
       if (ctx.expected instanceof TypeRecord) {
         TypeRecord exp = (TypeRecord) ctx.expected;
-        java.util.Map<String, Type> expMap = new java.util.HashMap<>();
+        Map<String, Type> expMap = new HashMap<>();
         for (RecordFieldType rft : exp.listrecordfieldtype_) {
           ARecordFieldType arf = (ARecordFieldType) rft;
           expMap.put(arf.stellaident_, arf.type_);
         }
-        java.util.Set<String> seen = new java.util.HashSet<>();
+        Set<String> seen = new HashSet<>();
         for (Binding b : p.listbinding_) {
           ABinding ab = (ABinding) b;
           if (!expMap.containsKey(ab.stellaident_)) {
@@ -1018,6 +1164,8 @@ import org.syntax.stella.PrettyPrinter;
         }
         return (R) exp;
       }
+
+      //нет ожидаемого
       ListRecordFieldType list = new ListRecordFieldType();
       for (Binding b : p.listbinding_) {
         ABinding ab = (ABinding) b;
@@ -1039,6 +1187,8 @@ import org.syntax.stella.PrettyPrinter;
         ensureEqual("cons tail", new TypeList(el.type_), tailTy);
         return (R) new TypeList(el.type_);
       }
+
+      //нет ожидаемого
       Type tailTy = (Type) p.expr_2.accept(new ExprVisitor<Type,A>(), arg);
       if (!(tailTy instanceof TypeList)) {
         throw new TypeError(ERR_UNEXP_TYPE_FOR("cons tail", new TypeList(new TypeNat()), tailTy));
@@ -1050,19 +1200,22 @@ import org.syntax.stella.PrettyPrinter;
     }
     public R visit(org.syntax.stella.Absyn.Head p, A arg)
     { /* List::head */
-      Type lt = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+      Context ctx = (Context) arg;
+      Type lt = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(null));
       TypeList tl = expectListType(lt, "List::head");
       return (R) tl.type_;
     }
     public R visit(org.syntax.stella.Absyn.IsEmpty p, A arg)
     { /* List::isempty */
-      Type lt = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+      Context ctx = (Context) arg;
+      Type lt = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(null));
       expectListType(lt, "List::isempty");
       return (R) new TypeBool();
     }
     public R visit(org.syntax.stella.Absyn.Tail p, A arg)
     { /* List::tail */
-      Type lt = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), arg);
+      Context ctx = (Context) arg;
+      Type lt = (Type) p.expr_.accept(new ExprVisitor<Type,A>(), (A) ctx.withExpected(null));
       TypeList tl = expectListType(lt, "List::tail");
       return (R) new TypeList(tl.type_);
     }
@@ -1094,9 +1247,10 @@ import org.syntax.stella.PrettyPrinter;
         throw new TypeError(ERROR_EXCEPTION_TYPE_NOT_DECLARED + ": try-catch without declared exception type");
       }
       Type tryTy = (Type) p.expr_1.accept(new ExprVisitor<Type,A>(), arg);
-      java.util.Map<String, Type> binds = checkPatternAndBindings(p.pattern_, ctx.exceptionType);
+      Map<String, Type> binds = checkPatternAndBindings(p.pattern_, ctx.exceptionType);
       Context catchCtx = ctx.copy();
-      for (java.util.Map.Entry<String, Type> e : binds.entrySet()) catchCtx.bind(e.getKey(), e.getValue());
+      for (Map.Entry<String, Type> e : binds.entrySet())
+        catchCtx.bind(e.getKey(), e.getValue());
       Type expectedCatch = (ctx.expected != null ? ctx.expected : tryTy);
       Type catchTy = (Type) p.expr_2.accept(new ExprVisitor<Type,A>(), (A) catchCtx.withExpected(expectedCatch));
       if (ctx.expected != null) {
@@ -1134,7 +1288,7 @@ import org.syntax.stella.PrettyPrinter;
     { /* Sum type injection: inl */
       Context ctx = (Context) arg;
       if (ctx.expected != null && !(ctx.expected instanceof TypeSum)) {
-        throw new TypeError(ERR_UNEXPECTED_INJECTION + ": expected " + PrettyPrinter.print(ctx.expected));
+        throw new TypeError(ERR_UNEXPECTED_INJECTION + ": expected1 " + PrettyPrinter.print(ctx.expected));
       }
       if (ctx.expected instanceof TypeSum ts) {
         Type leftTy = ts.type_1;
@@ -1149,7 +1303,7 @@ import org.syntax.stella.PrettyPrinter;
     { /* Sum type injection: inr */
       Context ctx = (Context) arg;
       if (ctx.expected != null && !(ctx.expected instanceof TypeSum)) {
-        throw new TypeError(ERR_UNEXPECTED_INJECTION + ": expected " + PrettyPrinter.print(ctx.expected));
+        throw new TypeError(ERR_UNEXPECTED_INJECTION + ": expected2 " + PrettyPrinter.print(ctx.expected));
       }
       if (ctx.expected instanceof TypeSum ts) {
         Type rightTy = ts.type_2;
